@@ -12,9 +12,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     runs-on: ubuntu-latest
-    timeout-minutes: 110
+    timeout-minutes: 120
     
     steps:
       - uses: actions/checkout@v4
@@ -26,7 +26,6 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          # uvloop حذف شد - در GitHub Actions مشکل داشت
       
       - name: Run scanner
         env:
@@ -38,8 +37,8 @@ jobs:
         with:
           name: shard-${{ matrix.shard }}
           path: results/
-          if-no-files-found: warn
-          retention-days: 1  # کاهش فضای ذخیره‌سازی
+          if-no-files-found: error
+          retention-days: 1
 
   merge:
     needs: scan
@@ -49,7 +48,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}  # مهم برای push
+          token: ${{ secrets.GITHUB_TOKEN }}
       
       - uses: actions/setup-python@v5
         with:
@@ -70,6 +69,12 @@ jobs:
       
       - name: Publish results
         run: python publish.py
+      
+      - name: List output files
+        run: |
+          echo "=== Output files ==="
+          ls -la output/ || echo "No output folder"
+          cat output/top30.txt || echo "No top30 file"
       
       - name: Commit and push
         env:
