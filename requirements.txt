@@ -1,0 +1,6 @@
+aiohttp>=3.9.0
+orjson>=3.9.0
+netaddr>=1.0.0
+uvloop>=0.19.0
+aiodns>=3.1.0
+portalocker>=2.8.2
