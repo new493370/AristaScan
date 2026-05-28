@@ -3,67 +3,75 @@ name: cleanip_scanner
 on:
   schedule:
     - cron: '17 */12 * * *'
-
   workflow_dispatch:
+  push:  # اضافه کنید برای تست
+    branches: [ main, master ]
 
 jobs:
   scan:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0,1,2,3]
-
+        shard: [0, 1, 2, 3]
     runs-on: ubuntu-latest
-
     timeout-minutes: 30
-
+    
     steps:
       - uses: actions/checkout@v4
-
+      
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - run: pip install -r requirements.txt
-
-      - name: run scanner
+      
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install uvloop  # uvloop نیاز به کامپایل دارد، ممکن است در GitHub Actions مشکل داشته باشد
+      
+      - name: Run scanner
         env:
           SHARD: ${{ matrix.shard }}
         run: python main.py
-
-      - uses: actions/upload-artifact@v4
+      
+      - name: Upload results
+        uses: actions/upload-artifact@v4
         with:
           name: shard-${{ matrix.shard }}
           path: results/
+          if-no-files-found: warn  # اضافه کنید
 
   merge:
     needs: scan
-
     runs-on: ubuntu-latest
-
+    if: always()  # حتی اگر بعضی شاردها فیل شوند
+    
     steps:
       - uses: actions/checkout@v4
-
+      
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - run: pip install orjson
-
-      - uses: actions/download-artifact@v4
+      
+      - name: Install dependencies
+        run: pip install orjson
+      
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
         with:
           pattern: shard-*
           path: results/
           merge-multiple: true
-
-      - run: python merger.py
-
-      - run: python publish.py
-
-      - name: push results
+      
+      - name: Merge results
+        run: python merger.py
+      
+      - name: Publish results
+        run: python publish.py
+      
+      - name: Commit and push
         run: |
-          git config user.name github-actions
-          git config user.email github-actions@github.com
-          git add .
-          git commit -m "update results" || true
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add output/ merged.json || true
+          git diff --staged --quiet || git commit -m "Update scan results [skip ci]"
           git push
