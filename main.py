@@ -6,11 +6,7 @@ import sys
 
 from netaddr import IPNetwork, AddrFormatError
 
-import uvloop
-
-asyncio.set_event_loop_policy(
-    uvloop.EventLoopPolicy()
-)
+# uvloop حذف شد - در GitHub Actions مشکل داشت
 
 sys.path.insert(
     0,
@@ -60,41 +56,76 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def expand_ip_ranges(ranges, max_ips):
+    """
+    بهینه‌سازی شده: نمونه‌برداری هوشمندتر و جلوگیری از expand کردن رنج‌های خیلی بزرگ
+    """
     all_ips = []
-
+    seen = set()  # برای حذف duplicates سریعتر
+    
     for r in ranges[:MAX_RANGES]:
-
+        if len(all_ips) >= max_ips:
+            break
+            
         try:
             net = IPNetwork(r)
-
-            if net.size > 1000:
-                stride = max(1, net.size // 100)
-
-                for i in range(0, net.size, stride):
-                    all_ips.append(str(net[i]))
-
-            else:
-                for ip in net:
-                    all_ips.append(str(ip))
-
-            if len(all_ips) >= max_ips:
+            
+            # محاسبه حداکثر تعداد IP برای این رنج
+            remaining = max_ips - len(all_ips)
+            if remaining <= 0:
                 break
-
+            
+            # برای رنج‌های خیلی بزرگ، نمونه‌برداری می‌کنیم
+            if net.size > 5000:
+                # حداکثر 200 IP از هر رنج بزرگ
+                sample_size = min(200, remaining)
+                stride = max(1, net.size // sample_size)
+                
+                for i in range(0, net.size, stride):
+                    ip_str = str(net[i])
+                    if ip_str not in seen:
+                        seen.add(ip_str)
+                        all_ips.append(ip_str)
+                        if len(all_ips) >= max_ips:
+                            break
+                            
+            elif net.size > 1000:
+                # رنج متوسط: حداکثر 100 IP
+                sample_size = min(100, remaining)
+                stride = max(1, net.size // sample_size)
+                
+                for i in range(0, net.size, stride):
+                    ip_str = str(net[i])
+                    if ip_str not in seen:
+                        seen.add(ip_str)
+                        all_ips.append(ip_str)
+                        if len(all_ips) >= max_ips:
+                            break
+            else:
+                # رنج کوچک: همه IPها
+                for ip in net:
+                    ip_str = str(ip)
+                    if ip_str not in seen:
+                        seen.add(ip_str)
+                        all_ips.append(ip_str)
+                        if len(all_ips) >= max_ips:
+                            break
+                            
         except AddrFormatError:
             continue
-
-    return list(dict.fromkeys(all_ips))[:max_ips]
+        except Exception as e:
+            logger.warning(f"Error processing range {r}: {e}")
+            continue
+    
+    logger.info(f"Expanded {len(all_ips)} unique IPs from ranges")
+    return all_ips[:max_ips]
 
 async def scan_ip(ip, domains, cache):
     if is_stable(cache, ip):
         return None
 
     for domain in domains:
-
         for port in PORTS:
-
             for _ in range(RETRIES):
-
                 result = await probe(
                     ip,
                     domain,
@@ -102,7 +133,6 @@ async def scan_ip(ip, domains, cache):
                 )
 
                 if result:
-
                     stable = update_stability(
                         cache,
                         ip,
@@ -131,7 +161,6 @@ async def scan_ip(ip, domains, cache):
                     }
 
     update_stability(cache, ip, False)
-
     return None
 
 async def worker(queue, domains, cache, results, sem):
@@ -148,10 +177,14 @@ async def worker(queue, domains, cache, results, sem):
 
                 if result:
                     results.append(result)
+                    
+                    # لاگ پیشرفت هر 100 ایپی
+                    if len(results) % 100 == 0:
+                        logger.info(f"Found {len(results)} valid IPs so far")
 
         except Exception as e:
             logger.exception(
-                f"worker error: {e}"
+                f"worker error for IP {ip}: {e}"
             )
 
         finally:
@@ -165,22 +198,19 @@ async def main():
             if x.strip()
         ]
 
-    logger.info("fetching ranges...")
+    logger.info(f"Loaded {len(domains)} domains")
+    logger.info("Fetching IP ranges...")
 
     ranges = await fetch_ranges()
 
-    logger.info(
-        f"ranges loaded: {len(ranges)}"
-    )
+    logger.info(f"Ranges loaded: {len(ranges)}")
 
     all_ips = expand_ip_ranges(
         ranges,
         MAX_IPS_PER_RUN
     )
 
-    logger.info(
-        f"expanded ips: {len(all_ips)}"
-    )
+    logger.info(f"Total IPs to scan: {len(all_ips)}")
 
     my_ips = split_into_shards(
         all_ips,
@@ -188,22 +218,17 @@ async def main():
         SHARD_ID
     )
 
-    logger.info(
-        f"shard size: {len(my_ips)}"
-    )
+    logger.info(f"Shard {SHARD_ID} size: {len(my_ips)} IPs")
 
     cache = load_cache()
+    logger.info(f"Cache loaded: {len(cache)} entries")
 
     queue = asyncio.Queue()
-
     for ip in my_ips:
         queue.put_nowait(ip)
 
     results = []
-
-    sem = asyncio.Semaphore(
-        MAX_CONCURRENT
-    )
+    sem = asyncio.Semaphore(MAX_CONCURRENT)
 
     workers = [
         asyncio.create_task(
@@ -218,12 +243,24 @@ async def main():
         for _ in range(WORKERS)
     ]
 
+    # پیشرفت را نشان بده
+    total = len(my_ips)
+    last_log = 0
+    
+    while not queue.empty():
+        await asyncio.sleep(10)
+        processed = total - queue.qsize()
+        if processed - last_log >= 500:
+            logger.info(f"Progress: {processed}/{total} IPs processed, found {len(results)} valid")
+            last_log = processed
+
     await queue.join()
 
     for w in workers:
         w.cancel()
 
     save_cache(cache)
+    logger.info(f"Cache saved with {len(cache)} entries")
 
     import orjson
 
@@ -232,18 +269,17 @@ async def main():
         f"shard_{SHARD_ID}.json"
     )
 
-    with open(out, "wb") as f:
-        f.write(orjson.dumps(
-            sorted(
-                results,
-                key=lambda x: x["score"],
-                reverse=True
-            )
-        ))
-
-    logger.info(
-        f"valid results: {len(results)}"
+    # مرتب‌سازی بر اساس امتیاز (بالاترین اولویت)
+    results_sorted = sorted(
+        results,
+        key=lambda x: (x["score"], -x["latency"]),
+        reverse=True
     )
+
+    with open(out, "wb") as f:
+        f.write(orjson.dumps(results_sorted))
+
+    logger.info(f"Shard {SHARD_ID} completed: {len(results)} valid IPs found")
 
 if __name__ == "__main__":
     asyncio.run(main())
