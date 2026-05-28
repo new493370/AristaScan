@@ -1,0 +1,5 @@
+cloudflare.com
+cdnjs.cloudflare.com
+workers.dev
+challenge.cloudflare.com
+static.cloudflareinsights.com
